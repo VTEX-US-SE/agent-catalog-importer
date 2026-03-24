@@ -20,6 +20,44 @@ class VTEXCategoryTreeAgent:
         self.departments = {}
         self.categories = {}
         self.brands = {}
+        # Category IDs we already pushed active/visible this run (avoids N× duplicate PUTs)
+        self._ensured_visible_ids: set = set()
+    
+    @staticmethod
+    def _categories_list_for_product(product: Dict[str, Any]) -> List[Dict[str, Any]]:
+        categories_list = product.get("categories", [])
+        if not categories_list:
+            category = product.get("category", {})
+            if category:
+                categories_list = [category]
+        return categories_list
+    
+    def _product_tree_resolved(self, product: Dict[str, Any]) -> bool:
+        """True if saved departments/categories/brands already cover this product's path."""
+        categories_list = self._categories_list_for_product(product)
+        if not categories_list:
+            return True
+        dept_name = normalize_category_name(categories_list[0].get("Name", "Default"))
+        if dept_name not in self.departments or not self.departments[dept_name].get("id"):
+            return False
+        parent_id = self.departments[dept_name]["id"]
+        if len(categories_list) == 1:
+            cat_key = f"{parent_id}::{dept_name}"
+            return cat_key in self.categories
+        for cat_info in categories_list[1:]:
+            cat_name = normalize_category_name(cat_info.get("Name", ""))
+            if not cat_name:
+                continue
+            cat_key = f"{parent_id}::{cat_name}"
+            if cat_key not in self.categories:
+                return False
+            parent_id = self.categories[cat_key]["id"]
+        brand = product.get("brand", {})
+        brand_name = normalize_brand_name(brand.get("Name", "Default"))
+        brand_key = brand_name.lower()
+        if not brand_name or brand_name == "Default":
+            return True
+        return brand_key in self.brands
     
     def create_category_tree(self, legacy_site_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -32,12 +70,12 @@ class VTEXCategoryTreeAgent:
             Dictionary with VTEX category structure (departments, categories, brands)
         """
         self.logger.info("Starting category tree creation")
+        self._ensured_visible_ids = set()
         
-        # Load from state if present (warm start), but always process current products
-        # so that new categories from this import are created
+        # Load from state (02_vtex_category_tree.json) so a second run can skip work.
         state = load_state("vtex_category_tree")
         if state and state.get("departments"):
-            self.logger.info("Loaded category tree from state; will extend with current products")
+            self.logger.info("Loaded category tree from state; will extend only if catalog needs new paths")
             self.departments = state.get("departments", {})
             self.categories = state.get("categories", {})
             self.brands = state.get("brands", {})
@@ -45,14 +83,48 @@ class VTEXCategoryTreeAgent:
         products = legacy_site_data.get("products", [])
         self.logger.info(f"Processing {len(products)} products for category tree")
         
+        if products and self.departments and all(
+            self._product_tree_resolved(p) for p in products
+        ):
+            print(
+                "\n   📂 Reusing saved category tree from state — all products already have "
+                "departments, categories, and brands mapped. Skipping per-product pass."
+            )
+            print(
+                "      (Delete state/02_vtex_category_tree.json if VTEX or catalog paths changed and you need a full rebuild.)"
+            )
+            self.logger.info(
+                "Skipped category/brand mapping loop; saved state covers current product list"
+            )
+            output = self._format_output()
+            save_state("vtex_category_tree", output)
+            self.logger.info(
+                f"Category tree ready from cache. {len(self.departments)} departments, "
+                f"{len(self.categories)} categories, {len(self.brands)} brands"
+            )
+            return output
+        
         # Evaluate existing VTEX structure (avoid creating duplicates)
         existing_categories = self._evaluate_existing_categories()
         existing_brands = self._evaluate_existing_brands()
         
         # Process all products to build/extend category tree (creates missing depts/cats/brands)
-        for product in products:
+        total_products = len(products)
+        print(
+            f"\n   📂 Building category tree from catalog ({total_products} product(s)): "
+            f"resolving departments, categories, and brands (API calls only when something is missing)."
+        )
+        self.logger.info(f"Mapping categories/brands per product: {total_products} products")
+        progress_step = max(1, total_products // 20)
+        for i, product in enumerate(products, start=1):
+            if i == 1 or i == total_products or (i % progress_step == 0):
+                msg = f"   ... category/brand mapping {i}/{total_products}"
+                print(msg)
+                self.logger.info(msg)
             self._process_product_categories(product, existing_categories)
             self._process_product_brand(product, existing_brands)
+        print(f"   ✅ Finished category/brand mapping for {total_products} product(s). Saving tree state...")
+        self.logger.info(f"Category/brand mapping complete for {total_products} products")
         
         # Save output
         output = self._format_output()
@@ -186,16 +258,24 @@ class VTEXCategoryTreeAgent:
         if not category_id:
             return
         try:
+            cid = int(category_id)
+        except (TypeError, ValueError):
+            return
+        if cid in self._ensured_visible_ids:
+            return
+        try:
             self.vtex_client.update_category(
-                category_id,
+                cid,
                 is_active=True,
                 show_in_store_front=True,
                 active_store_front_link=True,
                 global_category_id=1,
             )
-            self.logger.debug(f"Ensured category {category_id} is active and visible")
+            self._ensured_visible_ids.add(cid)
+            self.logger.debug(f"Ensured category {cid} is active and visible")
+            time.sleep(0.05)
         except Exception as e:
-            self.logger.warning(f"Could not set category {category_id} active/visible: {e}")
+            self.logger.warning(f"Could not set category {cid} active/visible: {e}")
     
     def _process_product_categories(
         self,
@@ -246,6 +326,7 @@ class VTEXCategoryTreeAgent:
                             "created": True
                         }
                         self.logger.info(f"Created department: {dept_name} (ID: {dept_id})")
+                        time.sleep(0.15)
                     else:
                         self.logger.warning(f"Could not get department ID for: {dept_name}")
                 except Exception as e:
@@ -325,6 +406,7 @@ class VTEXCategoryTreeAgent:
                             }
                             parent_id = cat_id
                             self.logger.info(f"Created category: {cat_name} (ID: {cat_id})")
+                            time.sleep(0.15)
                         else:
                             self.logger.warning(f"Could not get category ID for: {cat_name}")
                     except Exception as e:
@@ -332,8 +414,6 @@ class VTEXCategoryTreeAgent:
                 else:
                     parent_id = self.categories[cat_key]["id"]
                     self._ensure_category_active_and_visible(parent_id)
-        
-        time.sleep(0.2)  # Rate limiting
     
     def _process_product_brand(
         self,
@@ -373,12 +453,11 @@ class VTEXCategoryTreeAgent:
                             "created": True
                         }
                         self.logger.info(f"Created brand: {brand_name} (ID: {brand_id})")
+                        time.sleep(0.15)
                     else:
                         self.logger.warning(f"Could not get brand ID for: {brand_name}")
                 except Exception as e:
                     self.logger.error(f"Error creating brand {brand_name}: {e}")
-        
-        time.sleep(0.2)  # Rate limiting
     
     def _format_output(self) -> Dict[str, Any]:
         """Format output JSON."""
