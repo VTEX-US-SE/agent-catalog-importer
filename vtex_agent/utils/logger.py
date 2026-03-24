@@ -14,7 +14,7 @@ def get_agent_logger(agent_name: str, log_dir: Optional[str] = None) -> logging.
     - File (all levels, append mode)
     
     Args:
-        agent_name: Name of the agent (e.g., 'legacy_site_agent')
+        agent_name: Name of the agent (e.g., 'migration_agent')
         log_dir: Directory for log files (default: logs/ in project root)
         
     Returns:

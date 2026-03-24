@@ -8,9 +8,6 @@ state/
 state - */
 **/state - */
 
-# Legacy scrapper scripts (keep locally, but don't commit)
-scrapper/
-
 # Virtual environments
 venv/
 .env

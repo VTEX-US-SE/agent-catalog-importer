@@ -710,7 +710,6 @@ Return a JSON object with:
         {{"Name": "category name", "Department": "parent department"}}
     ],
     "brands": ["list of unique brand names"],
-    "specification_groups": ["list of common specification group names"],
     "total_products": {len(sample_products)},
     "product_patterns": {{
         "has_variations": true/false,

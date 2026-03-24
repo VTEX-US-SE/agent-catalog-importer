@@ -11,15 +11,16 @@ STEP_ORDER = {
     "discovery": 1,
     "mapping": 2,
     "extraction": 3,
-    "legacy_site_extraction": None,  # No number prefix (final output file)
-    "sampling": 5,
-    "reporting": 6,
-    "vtex_category_tree": 7,
-    "vtex_products_skus": 8,
-    "vtex_images": 9,
-    "execution": 10,
-    "vtex_specifications": 11,
-    "field_type_overrides": 12,
+    "catalog_content": None,  # No number prefix (source of truth file)
+    "sampling": 4,
+    "reporting": 1,
+    "vtex_category_tree": 2,
+    "vtex_products_skus": 3,
+    "vtex_images": 4,
+    "execution": 5,
+    "vtex_specifications": 6,
+    "field_type_overrides": 7,
+    "vtex_selector_execution": 8,
     "custom_prompt": None,  # No number prefix (not part of main workflow)
 }
 

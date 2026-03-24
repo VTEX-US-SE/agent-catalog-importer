@@ -355,7 +355,7 @@ def process_and_upload_images_to_github(
     repo_path: str = "images",
     github_token: Optional[str] = None,
     github_repo: Optional[str] = None,
-    github_branch: str = "main",
+    github_branch: Optional[str] = None,
     temp_dir: str = "/tmp/vtex_images"
 ) -> List[Dict[str, Any]]:
     """
@@ -367,13 +367,18 @@ def process_and_upload_images_to_github(
         repo_path: Path within GitHub repository
         github_token: GitHub token (or from env)
         github_repo: GitHub repo (or from env)
-        github_branch: Branch name
+        github_branch: Branch name, or None for GITHUB_BRANCH env (default main)
         temp_dir: Temporary directory for downloaded images
         
     Returns:
         List of dicts with image info: [{"url": raw_github_url, "name": filename, "sequence": n}, ...]
     """
     os.makedirs(temp_dir, exist_ok=True)
+    branch = (
+        github_branch
+        if github_branch is not None
+        else os.getenv("GITHUB_BRANCH", "main")
+    )
     uploaded_images = []
     
     for sequence, image_url in enumerate(image_urls, start=1):
@@ -435,7 +440,7 @@ def process_and_upload_images_to_github(
             repo_path=repo_path,
             github_token=github_token,
             github_repo=github_repo,
-            github_branch=github_branch
+            github_branch=branch
         )
         
         if raw_github_url:

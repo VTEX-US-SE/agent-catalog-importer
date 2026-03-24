@@ -83,6 +83,35 @@ class VTEXClient:
                 def raise_for_status(self):
                     pass
             return MockResponse()
+
+    def _request_full_path(
+        self,
+        method: str,
+        full_path: str,
+        data: Optional[Dict] = None,
+        params: Optional[Dict] = None
+    ) -> requests.Response:
+        """Make request to a full API path (e.g. /api/catalog_system/...)."""
+        url = f"{self.base_url}{full_path}"
+        try:
+            response = requests.request(
+                method=method,
+                url=url,
+                json=data,
+                params=params,
+                headers=self.headers,
+                timeout=30
+            )
+            return response
+        except requests.exceptions.RequestException as e:
+            class MockResponse:
+                status_code = 500
+                text = str(e)
+                def json(self):
+                    return {}
+                def raise_for_status(self):
+                    pass
+            return MockResponse()
     
     # ========== CATEGORY OPERATIONS ==========
     
@@ -189,19 +218,69 @@ class VTEXClient:
         return {}
     
     def list_categories(self) -> List[Dict[str, Any]]:
-        """List all categories. Returns a list of category dicts (handles list or wrapped response)."""
-        endpoint = "pvt/category"
-        response = self._request("GET", endpoint)
-        if response.status_code != 200:
-            return []
-        data = response.json()
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            # Some APIs return { "data": [...], "range": {...} or similar
-            for key in ("data", "items", "categories", "CategoryTree", "value"):
-                if isinstance(data.get(key), list):
-                    return data[key]
+        """
+        List all categories.
+
+        Preferred endpoint (per VTEX docs):
+        GET /api/catalog_system/pub/category/tree/{categoryLevels}
+        """
+        def _flatten_pub_tree(nodes: List[Dict[str, Any]], parent_id: int = 0) -> List[Dict[str, Any]]:
+            flat: List[Dict[str, Any]] = []
+            for node in nodes or []:
+                if not isinstance(node, dict):
+                    continue
+                cat_id = node.get("id") or node.get("Id")
+                name = node.get("name") or node.get("Name")
+                if cat_id is None or not name:
+                    continue
+                try:
+                    cat_id = int(cat_id)
+                except (TypeError, ValueError):
+                    continue
+                flat.append({
+                    "Id": cat_id,
+                    "Name": str(name),
+                    "FatherCategoryId": parent_id,
+                })
+                children = node.get("children") or node.get("Children") or []
+                flat.extend(_flatten_pub_tree(children, parent_id=cat_id))
+            return flat
+
+        # 1) Primary: catalog_system public tree
+        for levels in (10, 20):
+            response = self._request_full_path("GET", f"/api/catalog_system/pub/category/tree/{levels}")
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    flattened = _flatten_pub_tree(data, parent_id=0)
+                    if flattened:
+                        return flattened
+
+        # 2) Fallback: catalog_system pvt endpoints
+        for path in (
+            "/api/catalog_system/pvt/category",
+            "/api/catalog_system/pvt/category/list",
+        ):
+            response = self._request_full_path("GET", path)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    for key in ("data", "items", "categories", "CategoryTree", "value"):
+                        if isinstance(data.get(key), list):
+                            return data[key]
+
+        # 3) Legacy fallback: catalog pvt/category
+        response = self._request("GET", "pvt/category")
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for key in ("data", "items", "categories", "CategoryTree", "value"):
+                    if isinstance(data.get(key), list):
+                        return data[key]
         return []
     
     # ========== BRAND OPERATIONS ==========
@@ -228,76 +307,60 @@ class VTEXClient:
             # Try to get existing brand
             brands = self.list_brands()
             for brand in brands:
-                if isinstance(brand, dict) and brand.get("Name") == name:
+                if not isinstance(brand, dict):
+                    continue
+                existing_name = (
+                    brand.get("Name")
+                    or brand.get("name")
+                    or brand.get("BrandName")
+                    or ""
+                )
+                if str(existing_name).strip().lower() == str(name).strip().lower():
                     return brand
         response.raise_for_status()
         return {}
     
     def list_brands(self) -> List[Dict[str, Any]]:
-        """List all brands."""
-        endpoint = "pvt/brand"
-        response = self._request("GET", endpoint)
-        if response.status_code == 200:
-            return response.json()
+        """
+        List all brands.
+
+        Preferred endpoint (per VTEX docs):
+        GET /api/catalog_system/pvt/brand/list
+        """
+        # In many VTEX accounts, brand listing is exposed via catalog_system.
+        # Keep fallbacks for compatibility with older/alternate routes.
+        full_path_attempts = [
+            "/api/catalog_system/pvt/brand/list",
+            "/api/catalog_system/pvt/brand/list?page=1&pageSize=1000",
+        ]
+        for path in full_path_attempts:
+            response = self._request_full_path("GET", path)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    for key in ("data", "items", "value", "Brands"):
+                        if isinstance(data.get(key), list):
+                            return data[key]
+
+        fallback_endpoints = [
+            "pvt/brand/list",
+            "pvt/brand",
+        ]
+        for endpoint in fallback_endpoints:
+            response = self._request("GET", endpoint)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    for key in ("data", "items", "value", "Brands"):
+                        if isinstance(data.get(key), list):
+                            return data[key]
         return []
     
     # ========== SPECIFICATION OPERATIONS ==========
-    
-    def create_specification_group(
-        self,
-        group_name: str,
-        category_id: int
-    ) -> Dict[str, Any]:
-        """Create a specification group (required before creating fields)."""
-        # Check if group already exists
-        existing_groups = self.list_specification_groups(category_id)
-        for group in existing_groups:
-            if isinstance(group, dict) and group.get("Name") == group_name:
-                print(f"         ℹ️  Specification group '{group_name}' already exists (ID: {group.get('Id')})")
-                return group
-        
-        # Try different endpoint variations
-        endpoints_to_try = [
-            f"pvt/specification/group",
-            f"pvt/specification/group/{category_id}",
-            f"pvt/category/{category_id}/specification/group"
-        ]
-        
-        data = {
-            "Name": group_name,
-            "CategoryId": category_id
-        }
-        
-        for endpoint in endpoints_to_try:
-            response = self._request("POST", endpoint, data=data)
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code in [400, 409]:
-                # Might already exist, try to get it
-                existing_groups = self.list_specification_groups(category_id)
-                for group in existing_groups:
-                    if isinstance(group, dict) and group.get("Name") == group_name:
-                        return group
-        
-        # If all endpoints fail, return empty (groups might be optional in some VTEX versions)
-        print(f"         ⚠️  Could not create specification group '{group_name}', continuing without it")
-        return {}
-    
-    def list_specification_groups(self, category_id: int) -> List[Dict[str, Any]]:
-        """List all specification groups for a category."""
-        endpoints_to_try = [
-            ("GET", f"pvt/specification/group", {"CategoryId": category_id}),
-            ("GET", f"pvt/specification/group/{category_id}", None),
-            ("GET", f"pvt/category/{category_id}/specification/group", None)
-        ]
-        
-        for method, endpoint, params in endpoints_to_try:
-            response = self._request(method, endpoint, params=params)
-            if response.status_code == 200:
-                result = response.json()
-                return result if isinstance(result, list) else []
-        
-        return []
     
     def create_specification_field(
         self,
@@ -474,6 +537,138 @@ class VTEXClient:
             print(f"         ⚠️  Response: {response.text[:200]}")
         
         return {}
+
+    def get_fields_by_collection(self, category_id: int) -> List[Dict[str, Any]]:
+        """
+        List specification fields for a category using catalog_system endpoint.
+        Primary endpoint requested by workflow:
+        GET /api/catalog_system/pvt/specification/fieldGetByCollection/{categoryId}
+        """
+        attempts = [
+            f"/api/catalog_system/pvt/specification/fieldGetByCollection/{category_id}",
+            f"/api/catalog_system/pvt/specification/fieldGetByCategoryId/{category_id}",
+        ]
+        for path in attempts:
+            response = self._request_full_path("GET", path)
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list):
+                    return result
+                if isinstance(result, dict):
+                    for key in ("data", "items", "value", "Fields"):
+                        if isinstance(result.get(key), list):
+                            return result[key]
+        return []
+
+    def upsert_category_specification_field(
+        self,
+        category_id: int,
+        field_name: str,
+        field_type_id: int,
+        is_sku_selector: bool,
+        existing_field: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create specification field using the requested endpoint:
+        POST /api/catalog/pvt/specification
+        If field already exists, returns it unchanged.
+        """
+        if existing_field:
+            return existing_field
+
+        payload = {
+            "Name": field_name,
+            "CategoryId": category_id,
+            "FieldTypeId": field_type_id,
+            "IsStockKeepingUnit": bool(is_sku_selector),
+            "IsOnProductDetails": True,
+            "IsActive": True,
+            "IsFilter": True,
+            "IsRequired": False,
+        }
+        response = self._request_full_path("POST", "/api/catalog/pvt/specification", data=payload)
+        if response.status_code in [200, 201]:
+            return response.json() if response.text else {"Name": field_name}
+        response_preview = (response.text or "").strip()
+        if len(response_preview) > 400:
+            response_preview = response_preview[:400] + "..."
+        print(
+            "         ⚠️  Specification create failed "
+            f"[status={response.status_code}] endpoint=/api/catalog/pvt/specification "
+            f"field='{field_name}' category={category_id}"
+        )
+        print(f"         ⚠️  Response body: {response_preview or 'No error message'}")
+        return {}
+
+    def create_specification_group_for_category(
+        self,
+        category_id: int,
+        group_name: str = "Specifications",
+    ) -> Dict[str, Any]:
+        """
+        Create specification group using the requested endpoint:
+        POST /api/catalog/pvt/specificationgroup
+        """
+        payload = {
+            "Name": group_name,
+            "CategoryId": category_id,
+        }
+        response = self._request_full_path("POST", "/api/catalog/pvt/specificationgroup", data=payload)
+        if response.status_code in [200, 201]:
+            return response.json() if response.text else {"Name": group_name, "CategoryId": category_id}
+        # Duplicate/exists scenarios should not block flow.
+        if response.status_code in [400, 409]:
+            return {"Name": group_name, "CategoryId": category_id, "already_exists": True}
+        response_preview = (response.text or "").strip()
+        if len(response_preview) > 400:
+            response_preview = response_preview[:400] + "..."
+        print(
+            "         ⚠️  Specification group create failed "
+            f"[status={response.status_code}] endpoint=/api/catalog/pvt/specificationgroup "
+            f"group='{group_name}' category={category_id}"
+        )
+        print(f"         ⚠️  Response body: {response_preview or 'No error message'}")
+        return {}
+
+    def set_sku_specification_values(
+        self,
+        sku_id: int,
+        field_name: str,
+        field_values: List[str],
+        group_name: str = "Specifications",
+        root_level_specification: bool = False
+    ) -> bool:
+        """
+        Set SKU specification values using:
+        PUT /api/catalog/pvt/stockkeepingunit/{skuId}/specificationvalue
+        """
+        payload = {
+            "FieldName": field_name,
+            "GroupName": group_name,
+            "RootLevelSpecification": root_level_specification,
+            "FieldValues": [str(v) for v in field_values if str(v).strip()]
+        }
+        if not payload["FieldValues"]:
+            return False
+
+        attempts = [
+            ("PUT", "full", f"/api/catalog_system/pvt/sku/stockkeepingunitid/{sku_id}/specification", payload),
+            ("PUT", "full", f"/api/catalog_system/pvt/sku/stockkeepingunitid/{sku_id}/specification", [payload]),
+            ("PUT", "catalog", f"pvt/stockkeepingunit/{sku_id}/specificationvalue", payload),
+            ("PUT", "catalog", f"pvt/stockkeepingunit/{sku_id}/specificationvalue", [payload]),
+            ("PUT", "catalog", f"pvt/stockkeepingunit/{sku_id}/specification", payload),
+            ("PUT", "catalog", f"pvt/stockkeepingunit/{sku_id}/specification", [payload]),
+        ]
+
+        for method, mode, endpoint, body in attempts:
+            response = (
+                self._request_full_path(method, endpoint, data=body)
+                if mode == "full"
+                else self._request(method, endpoint, data=body)
+            )
+            if response.status_code in [200, 201, 204]:
+                return True
+        return False
     
     # ========== PRODUCT OPERATIONS ==========
     

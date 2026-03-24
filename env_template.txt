@@ -1,20 +1,31 @@
-# Copy this file to .env and fill in your credentials
+# Copy this file to .env and fill in your values.
 
-# Google Gemini API
-# For Vertex AI: Leave GEMINI_BASE_URL unset to use global endpoint (recommended to avoid 429 errors)
-# For Google AI Studio: Use GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+# --- Google Gemini (reporting / structure analysis) ---
+# API key: https://aistudio.google.com/app/apikey
 GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_MODEL=gemini-2.0-flash-lite
-# GEMINI_BASE_URL=  # Leave unset for Vertex AI global endpoint (recommended)
+# Default in code if unset: gemini-2.0-flash (see vtex_agent/tools/gemini_mapper.py)
+GEMINI_MODEL=gemini-2.0-flash
+# Leave unset to use the default API endpoint for google-genai.
+# Set only if your setup requires an explicit base URL (e.g. some Google AI Studio configs).
+# GEMINI_BASE_URL=
 
-# VTEX API Credentials
+# --- VTEX Catalog API ---
 VTEX_ACCOUNT_NAME=your_account_name
 VTEX_APP_KEY=your_app_key
 VTEX_APP_TOKEN=your_app_token
+# Optional: warehouse id for inventory updates (default in code: 1_1)
+# VTEX_WAREHOUSE_ID=1_1
 
-# GitHub Credentials (for image hosting)
-# GITHUB_REPO can be in format "owner/repo" (e.g., "fesdias/vtex-poc-ciser")
-# or full URL (e.g., "https://github.com/fesdias/vtex-poc-ciser")
-GITHUB_TOKEN=your_github_token_here
-GITHUB_REPO=your_username/your_repo_name
+# --- GitHub (image hosting when not using --use-json-image-urls) ---
+# Repo: "owner/repo" or full https://github.com/owner/repo URL
+GITHUB_TOKEN=your_github_personal_access_token
+GITHUB_REPO=owner/repo_name
+# Branch for uploads and raw.githubusercontent.com URLs (default: main)
 GITHUB_BRANCH=main
+
+# --- Optional: SKU specification selector assessment (OpenAI or Anthropic) ---
+# If neither is set, the assessor step is skipped where the code allows it.
+# OPENAI_API_KEY=
+# OPENAI_MODEL=gpt-4.1-mini
+# ANTHROPIC_API_KEY=
+# ANTHROPIC_MODEL=claude-3-5-sonnet-latest

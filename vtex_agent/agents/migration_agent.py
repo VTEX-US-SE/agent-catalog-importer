@@ -1,157 +1,31 @@
-"""Migration Agent - Coordinates the VTEX migration workflow."""
+"""Migration agent for import-to-vtex workflow."""
 import os
-import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
-from .legacy_site_agent import LegacySiteAgent
 from .vtex_category_tree_agent import VTEXCategoryTreeAgent
 from .vtex_product_sku_agent import VTEXProductSKUAgent
 from .vtex_image_agent import VTEXImageAgent
 from ..clients.vtex_client import VTEXClient
-from ..utils.state_manager import save_state, load_state, STATE_DIR
+from ..utils.state_manager import save_state, STATE_DIR
 from ..utils.logger import get_agent_logger
 from ..tools.gemini_mapper import analyze_structure_from_sample
 
 
 class MigrationAgent:
-    """Migration coordinator agent for VTEX catalog migration."""
+    """VTEX import coordinator from extracted legacy data."""
     
     def __init__(self):
         self.logger = get_agent_logger("migration_agent")
         
-        # Initialize agents
-        self.legacy_site_agent = LegacySiteAgent()
         self.vtex_client = None  # Initialize when needed
         self.vtex_category_tree_agent = None
         self.vtex_product_sku_agent = None
         self.vtex_image_agent = None
         
-        # Workflow state
-        self.workflow_state = {}
-    
-    def run_full_workflow(self):
-        """Execute the complete migration workflow."""
-        print("\n" + "="*60)
-        print("🤖 VTEX CATALOG MIGRATION AGENT")
-        print("="*60)
-        self.logger.info("Starting full workflow")
-        
-        try:
-            # Step 1: Discovery
-            target_url = self.discovery_phase()
-            
-            # Step 2: Mapping
-            product_urls = self.mapping_phase()
-            
-            # Step 3: Extraction (sample first)
-            print("\n💡 Extracting 1 sample product for mapping validation...")
-            legacy_site_data = self.extraction_phase(sample_size=1)
-            
-            # Step 4: Sampling
-            selected_urls = self.sampling_phase()
-            
-            # Re-extract selected products if needed
-            if len(selected_urls) > 1:
-                print(f"\n📥 Extracting {len(selected_urls)} selected products...")
-                self.legacy_site_agent.product_urls = selected_urls
-                legacy_site_data = self.legacy_site_agent.extract_all_products()
-            
-            # Step 5: Reporting
-            self.reporting_phase(legacy_site_data)
-            
-            # Step 6: Execution (requires approval)
-            self.execution_phase(legacy_site_data, require_approval=True)
-            
-        except KeyboardInterrupt:
-            print("\n\n⚠️  Workflow interrupted by user.")
-            self.logger.warning("Workflow interrupted by user")
-        except Exception as e:
-            print(f"\n\n❌ Error in workflow: {e}")
-            self.logger.error(f"Error in workflow: {e}", exc_info=True)
-            import traceback
-            traceback.print_exc()
-    
-    def discovery_phase(self) -> str:
-        """Step 1: Discovery - Get target website URL."""
-        print("\n" + "="*60)
-        print("📋 STEP 1: DISCOVERY")
-        print("="*60)
-        
-        state = load_state("discovery")
-        if state and state.get("target_url"):
-            print(f"✅ Found existing discovery state.")
-            target_url = state["target_url"]
-            print(f"   Target URL: {target_url}")
-            use_existing = input("\n   Use existing target URL? (y/n): ").strip().lower()
-            if use_existing == "y":
-                return self.legacy_site_agent.discover_target_url(target_url)
-        
-        return self.legacy_site_agent.discover_target_url()
-    
-    def mapping_phase(self) -> list:
-        """Step 2: Mapping - Find product URLs."""
-        print("\n" + "="*60)
-        print("🗺️  STEP 2: MAPPING - Finding Product URLs")
-        print("="*60)
-        
-        state = load_state("mapping")
-        if state and state.get("product_urls"):
-            print(f"✅ Found existing mapping state with {len(state['product_urls'])} URLs.")
-            use_existing = input("\n   Use existing product URLs? (y/n): ").strip().lower()
-            if use_existing == "y":
-                self.legacy_site_agent.product_urls = state["product_urls"]
-                print(f"   ✅ Loaded {len(self.legacy_site_agent.product_urls)} product URLs")
-                return self.legacy_site_agent.product_urls
-        
-        return self.legacy_site_agent.map_product_urls()
-    
-    def extraction_phase(self, sample_size: int = 1) -> Dict[str, Any]:
-        """Step 3: Extraction - Extract and map products."""
-        print("\n" + "="*60)
-        print("🔬 STEP 3: DATA EXTRACTION & ALIGNMENT")
-        print("="*60)
-        
-        return self.legacy_site_agent.extract_products(
-            sample_size=sample_size,
-            enable_iterative_refinement=True
-        )
-    
-    def sampling_phase(self) -> list:
-        """Step 4: Sampling - Select products to import."""
-        print("\n" + "="*60)
-        print("📊 STEP 4: SAMPLING & STRATEGY")
-        print("="*60)
-        
-        print(f"\n📈 Total product URLs available: {len(self.legacy_site_agent.product_urls)}")
-        
-        import_count = input("\nHow many products would you like to import for this phase? (or 'all' for all): ").strip()
-        
-        if import_count.lower() == "all":
-            selected_urls = self.legacy_site_agent.product_urls
-        else:
-            try:
-                count = int(import_count)
-                if count >= len(self.legacy_site_agent.product_urls):
-                    selected_urls = self.legacy_site_agent.product_urls
-                else:
-                    step = len(self.legacy_site_agent.product_urls) // count
-                    selected_urls = self.legacy_site_agent.product_urls[::step][:count]
-            except ValueError:
-                print("⚠️  Invalid input, using first 10 products")
-                selected_urls = self.legacy_site_agent.product_urls[:10]
-        
-        save_state("sampling", {
-            "selected_count": len(selected_urls),
-            "selected_urls": selected_urls
-        })
-        
-        print(f"✅ Selected {len(selected_urls)} products for import")
-        return selected_urls
-    
     def reporting_phase(self, legacy_site_data: Dict[str, Any]):
-        """Step 5: Reporting - Generate migration plan."""
+        """Generate migration report for selected products."""
         print("\n" + "="*60)
-        print("📄 STEP 5: REPORTING")
+        print("📄 STEP 1: REPORTING")
         print("="*60)
         
         if not legacy_site_data or not legacy_site_data.get("products"):
@@ -160,9 +34,9 @@ class MigrationAgent:
         
         # Analyze structure
         print("\n📊 Analyzing catalog structure...")
-        sample_data = [p.get("mapped_data", p) for p in legacy_site_data.get("products", [])[:5]]
+        all_products_data = legacy_site_data.get("products", [])
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-        structure = analyze_structure_from_sample(sample_data, gemini_api_key)
+        structure = analyze_structure_from_sample(all_products_data, gemini_api_key)
         
         # Generate report
         report_lines = [
@@ -192,12 +66,7 @@ class MigrationAgent:
         brands = structure.get("brands", [])
         for brand in brands:
             report_lines.append(f"- {brand}")
-        
-        report_lines.extend(["", "### Specification Groups"])
-        spec_groups = structure.get("specification_groups", [])
-        for spec in spec_groups:
-            report_lines.append(f"- {spec}")
-        
+
         report_lines.extend([
             "",
             "## Product Counts",
@@ -208,8 +77,7 @@ class MigrationAgent:
             "## Next Steps",
             "",
             "1. Review the catalog structure above",
-            "2. Confirm Specification Groups match your VTEX setup",
-            "3. Type 'APPROVED' to begin execution",
+            "2. Type 'APPROVED' to begin execution",
             ""
         ])
         
@@ -232,9 +100,48 @@ class MigrationAgent:
             "structure": structure,
             "report_path": str(report_path)
         })
+
+    def _set_sku_specifications(self, sku_id: int, sku_data: Dict[str, Any]) -> int:
+        """Set SKU specification values using the catalog endpoint."""
+        specifications = sku_data.get("Specifications", []) or []
+        if not specifications:
+            return 0
+
+        success_count = 0
+        for spec in specifications:
+            field_name = str(spec.get("Name", "")).strip()
+            field_value = spec.get("Value")
+            if not field_name or field_value in [None, ""]:
+                continue
+
+            try:
+                ok = self.vtex_client.set_sku_specification_values(
+                    sku_id=sku_id,
+                    field_name=field_name,
+                    field_values=[str(field_value)],
+                    group_name="Specifications",
+                    root_level_specification=False,
+                )
+                if ok:
+                    success_count += 1
+                    print(f"       📋 Specification set: {field_name} = {field_value}")
+                else:
+                    print(f"       ⚠️  Failed to set specification: {field_name}")
+            except Exception as spec_error:
+                self.logger.warning(
+                    f"Could not set specification '{field_name}' for SKU {sku_id}: {spec_error}"
+                )
+                print(f"       ⚠️  Failed to set specification {field_name}: {spec_error}")
+
+        return success_count
     
-    def execution_phase(self, legacy_site_data: Dict[str, Any], require_approval: bool = True):
-        """Step 6: Execution - Create catalog in VTEX."""
+    def execution_phase(
+        self,
+        legacy_site_data: Dict[str, Any],
+        require_approval: bool = True,
+        use_json_image_urls: bool = False
+    ):
+        """Create catalog entities in VTEX."""
         if require_approval:
             while True:
                 print("\n" + "="*60)
@@ -262,7 +169,7 @@ class MigrationAgent:
                     continue
         
         print("\n" + "="*60)
-        print("🚀 STEP 6: EXECUTION - VTEX Catalog Import")
+        print("🚀 STEP 2: EXECUTION - VTEX Catalog Import")
         print("="*60)
         
         # Initialize VTEX client
@@ -288,11 +195,14 @@ class MigrationAgent:
         # Step 1: Create category tree
         print("\n📂 Creating category tree...")
         vtex_category_tree = self.vtex_category_tree_agent.create_category_tree(legacy_site_data)
-        
-        # Step 2: Create products, SKUs, and associate images (new ordering)
-        # Note: Specifications are disabled - no specification fields will be created or set in VTEX
-        print("\n📦 Creating products, SKUs, and associating images...")
-        print("   Order: Product → SKU → Images")
+
+        # Step 2: Create products, SKUs, set SKU specification values, and associate images
+        print("\n📦 Creating products, SKUs, setting SKU specs, and associating images...")
+        print("   Order: Product → SKU → SKU Spec Values → Images")
+        if use_json_image_urls:
+            print("   Image strategy: use JSON URLs directly")
+        else:
+            print("   Image strategy: upload to GitHub then associate")
         
         products = legacy_site_data.get("products", [])
         print(f"\n📦 Processing {len(products)} products...")
@@ -332,10 +242,7 @@ class MigrationAgent:
                         "IsActive": True
                     }]
                 
-                # Get images for this product
-                images = product_data.get("images", [])
-                
-                # Create each SKU and immediately associate images
+                # Create each SKU, set SKU specification values, and then associate images
                 for sku_data in skus:
                     # Create SKU
                     sku_info = self.vtex_product_sku_agent.create_single_sku(
@@ -351,20 +258,28 @@ class MigrationAgent:
                     sku_id = sku_info["id"]
                     sku_name = sku_info["name"]
                     
-                    # Step 1: Associate images with this SKU (VTEX requires files before SKU can be active)
+                    # Step 1: Set SKU specification values before image upload.
+                    specs_set = self._set_sku_specifications(sku_id, sku_data)
+                    if specs_set == 0 and sku_data.get("Specifications"):
+                        self.logger.info(f"No SKU specifications were set for SKU {sku_id}")
+
+                    # Step 2: Associate images with this SKU (VTEX requires files before SKU can be active)
+                    # New import format keeps images at SKU level.
+                    images = sku_data.get("images", []) or product_data.get("images", [])
                     had_images = False
                     if images:
                         image_result = self.vtex_image_agent.associate_images_with_sku(
                             sku_id=sku_id,
                             sku_name=sku_name,
-                            image_urls=images
+                            image_urls=images,
+                            use_json_image_urls=use_json_image_urls
                         )
                         all_image_results[str(sku_id)] = image_result
                         had_images = (image_result.get("total_associated") or 0) > 0
                     else:
                         self.logger.info(f"No images found for SKU {sku_id}")
                     
-                    # Step 2: Activate SKU only after images are associated (VTEX requires files before IsActive=true)
+                    # Step 3: Activate SKU only after images are associated (VTEX requires files before IsActive=true)
                     if had_images:
                         try:
                             self.vtex_client.update_sku(sku_id, is_active=True)
@@ -375,8 +290,8 @@ class MigrationAgent:
                     else:
                         print(f"       ℹ️  SKU left inactive (no images; VTEX requires files before activating)")
                     
-                    # Step 3: Set price for this SKU
-                    # Order: Create SKU > Add images > Add price > Add inventory
+                    # Step 4: Set price for this SKU
+                    # Order: Create SKU > Add specs > Add images > Add price > Add inventory
                     # Price from website is set as basePrice with markup=0
                     try:
                         price_value = sku_data.get("Price") or 0
@@ -387,7 +302,7 @@ class MigrationAgent:
                         self.logger.warning(f"Could not set price for SKU {sku_id}: {price_error}")
                         print(f"       ⚠️  Failed to set price: {price_error}")
                     
-                    # Step 4: Set inventory for this SKU in all warehouses
+                    # Step 5: Set inventory for this SKU in all warehouses
                     # Inventory is set to 100 for all available warehouses
                     try:
                         inventory_results = self.vtex_client.set_sku_inventory_all_warehouses(
@@ -436,7 +351,7 @@ class MigrationAgent:
         print(f"   Products: {vtex_products.get('summary', {}).get('total_products', 0)}")
         print(f"   SKUs: {vtex_products.get('summary', {}).get('total_skus', 0)}")
         print(f"   Images: {vtex_images.get('summary', {}).get('total_images_uploaded', 0)}")
-        print(f"   Note: Specifications are disabled - no specification fields created or set")
+        print("   Note: SKU specification values are set during SKU processing")
         
         self.logger.info("Execution phase complete")
 

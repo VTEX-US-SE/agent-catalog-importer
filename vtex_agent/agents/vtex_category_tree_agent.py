@@ -166,10 +166,15 @@ class VTEXCategoryTreeAgent:
             brands = self.vtex_client.list_brands()
             for brand in brands:
                 if isinstance(brand, dict):
-                    name = brand.get("Name", "")
+                    name = (
+                        brand.get("Name")
+                        or brand.get("name")
+                        or brand.get("BrandName")
+                        or ""
+                    )
                     if name:
                         normalized = normalize_brand_name(name)
-                        existing[normalized] = brand
+                        existing[normalized.lower()] = brand
         except Exception as e:
             self.logger.warning(f"Error evaluating existing brands: {e}")
         
@@ -247,7 +252,13 @@ class VTEXCategoryTreeAgent:
                     self.logger.error(f"Error creating department {dept_name}: {e}")
         
         # Create category tree
-        parent_id = self.departments[dept_name]["id"]
+        dept_entry = self.departments.get(dept_name)
+        if not dept_entry or not dept_entry.get("id"):
+            self.logger.warning(
+                f"Skipping product category path; department '{dept_name}' could not be resolved."
+            )
+            return
+        parent_id = dept_entry["id"]
         self._ensure_category_active_and_visible(parent_id)
         
         # If only one category, department serves as category
@@ -332,17 +343,18 @@ class VTEXCategoryTreeAgent:
         """Process brand for a single product."""
         brand = product.get("brand", {})
         brand_name = normalize_brand_name(brand.get("Name", "Default"))
+        brand_key = brand_name.lower()
         
         if not brand_name or brand_name == "Default":
             return
         
-        if brand_name not in self.brands:
+        if brand_key not in self.brands:
             # Check if exists in VTEX
-            if brand_name in existing_brands:
-                brand_data = existing_brands[brand_name]
-                brand_id = brand_data.get("Id")
+            if brand_key in existing_brands:
+                brand_data = existing_brands[brand_key]
+                brand_id = brand_data.get("Id") or brand_data.get("id")
                 if brand_id:
-                    self.brands[brand_name] = {
+                    self.brands[brand_key] = {
                         "id": brand_id,
                         "name": brand_name,
                         "created": False
@@ -353,9 +365,9 @@ class VTEXCategoryTreeAgent:
                 try:
                     print(f"     🏷️  Creating brand: {brand_name}")
                     brand_obj = self.vtex_client.create_brand(brand_name)
-                    brand_id = brand_obj.get("Id") if isinstance(brand_obj, dict) else None
+                    brand_id = (brand_obj.get("Id") or brand_obj.get("id")) if isinstance(brand_obj, dict) else None
                     if brand_id:
-                        self.brands[brand_name] = {
+                        self.brands[brand_key] = {
                             "id": brand_id,
                             "name": brand_name,
                             "created": True

@@ -2,6 +2,7 @@
 from typing import Dict, Any, List, Optional
 import time
 import os
+from urllib.parse import urlparse
 
 from ..clients.vtex_client import VTEXClient
 from ..utils.state_manager import save_state, load_state
@@ -108,12 +109,6 @@ class VTEXImageAgent:
                 self.logger.warning(f"No SKUs found for product URL: {product_url}")
                 continue
             
-            # Get images from legacy site
-            images = product_data.get("images", [])
-            if not images:
-                self.logger.info(f"No images found for product URL: {product_url}")
-                continue
-            
             # Process each SKU
             for sku_data in skus:
                 sku_id = sku_data.get("id")
@@ -122,6 +117,24 @@ class VTEXImageAgent:
                     continue
                 
                 sku_name = sku_data.get("name", "Product Image")
+                # Prefer SKU-level images from import JSON. Fallback to product-level images.
+                preserved_sku_id = sku_data.get("sku_id_preserved")
+                ref_id = sku_data.get("ref_id")
+                source_sku = next(
+                    (
+                        s for s in product_data.get("skus", [])
+                        if str(s.get("SkuId")) == str(sku_id)
+                        or (preserved_sku_id and str(s.get("SkuId")) == str(preserved_sku_id))
+                        or (ref_id and s.get("RefId") == ref_id)
+                        or s.get("Name") == sku_name
+                    ),
+                    None
+                )
+                images = (source_sku or {}).get("images", []) or product_data.get("images", [])
+                if not images:
+                    self.logger.info(f"No images found for SKU {sku_id} (product URL: {product_url})")
+                    continue
+
                 print(f"\n   🖼️  Processing images for SKU ID {sku_id} ({sku_name})...")
                 self.logger.info(f"Processing {len(images)} images for SKU {sku_id}")
                 
@@ -265,7 +278,8 @@ class VTEXImageAgent:
         sku_id: int,
         sku_name: str,
         image_urls: List[str],
-        github_repo_path: str = "images"
+        github_repo_path: str = "images",
+        use_json_image_urls: bool = False
     ) -> Dict[str, Any]:
         """
         Associate images with a single SKU.
@@ -275,6 +289,7 @@ class VTEXImageAgent:
             sku_name: SKU name for labeling
             image_urls: List of image URLs from legacy site
             github_repo_path: Path within GitHub repository for images
+            use_json_image_urls: If True, skip GitHub upload and use input URLs directly
             
         Returns:
             Dictionary with image association results for this SKU
@@ -294,12 +309,25 @@ class VTEXImageAgent:
         print(f"     🖼️  Processing {len(image_urls)} images for SKU {sku_id}...")
         self.logger.info(f"Processing {len(image_urls)} images for SKU {sku_id}")
         
-        # Download, rename, and upload images to GitHub
-        uploaded_images = process_and_upload_images_to_github(
-            image_urls=image_urls,
-            sku_id=sku_id,
-            repo_path=github_repo_path
-        )
+        if use_json_image_urls:
+            uploaded_images = []
+            for idx, image_url in enumerate(image_urls, start=1):
+                parsed = urlparse(image_url)
+                file_name = os.path.basename(parsed.path) or f"{sku_id}_{idx}.jpg"
+                uploaded_images.append({
+                    "url": image_url,
+                    "name": file_name,
+                    "sequence": idx,
+                    "status": "uploaded",  # keep output compatibility
+                    "source": "json"
+                })
+        else:
+            # Download, rename, and upload images to GitHub
+            uploaded_images = process_and_upload_images_to_github(
+                image_urls=image_urls,
+                sku_id=sku_id,
+                repo_path=github_repo_path
+            )
         
         # Associate images with SKU in VTEX
         associated_images = []
