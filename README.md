@@ -1,4 +1,4 @@
-# VTEX catalog importer (direct import)
+# VTEX catalog importer
 
 This project imports a **pre-built** product catalog from `state/catalog_content.json` into VTEX. The CLI entry point is `main.py`: it loads that file, asks how many products to import, runs a **reporting** phase (Gemini analyzes structure and writes `state/final_plan.md`), then an **execution** phase that creates departments, categories, brands, products, SKUs, images, prices, and inventory via the VTEX APIs—with an `APPROVED` gate before writes.
 
