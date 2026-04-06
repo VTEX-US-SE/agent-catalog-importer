@@ -701,7 +701,7 @@ def analyze_structure_from_sample(
     
     prompt = f"""Analyze the following product samples and provide a summary of the catalog structure:
 
-{json.dumps(sample_products, indent=2, ensure_ascii=False)[:30000]}
+{json.dumps(sample_products, indent=2, ensure_ascii=False)}
 
 Return a JSON object with:
 {{
